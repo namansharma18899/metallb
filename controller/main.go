@@ -48,6 +48,35 @@ type controller struct {
 	ips    *allocator.Allocator
 }
 
+func cleanupDeprecatedAnnotations(svcRo *v1.Service, l log.Logger, c *controller) {
+	newAnnotations := make(map[string]string)
+	hasDeprecated := false
+
+	// Copy all non-deprecated annotations
+	for key, value := range svcRo.Annotations {
+		if strings.HasPrefix(key, DeprecatedAnnotationPrefix) {
+			hasDeprecated = true
+			// Map old annotation keys to new ones
+			newKey := strings.Replace(key, "metallb.universe.tf", "metallb.io", 1)
+			// Only logg warning if new annotation doesn't exist yet
+			if _, exists := svcRo.Annotations[newKey]; !exists {
+				level.Warn(l).Log("event", "deprecatedAnnotation", "annotation", key, "msg", "The used annotation is deprecated. Support might get removed in future versions")
+				c.client.Errorf(svcRo, "deprecatedAnnotation", "Service uses deprecated annotation %s", key)
+				// Copy the value to the new annotation format
+				newAnnotations[newKey] = value
+			}
+		} else {
+			// Keep all non-deprecated annotations
+			newAnnotations[key] = value
+		}
+	}
+
+	// Only update annotations if we found and removed deprecated ones
+	if hasDeprecated {
+		svcRo.Annotations = newAnnotations
+	}
+}
+
 func (c *controller) SetBalancer(l log.Logger, name string, svcRo *v1.Service, _ []discovery.EndpointSlice) controllers.SyncState {
 	level.Debug(l).Log("event", "startUpdate", "msg", "start of service update")
 	defer level.Debug(l).Log("event", "endUpdate", "msg", "end of service update")
@@ -111,6 +140,7 @@ func (c *controller) SetBalancer(l log.Logger, name string, svcRo *v1.Service, _
 	}
 
 	toWrite := svcRo.DeepCopy()
+	cleanupDeprecatedAnnotations(toWrite, l, c)
 	if !reflect.DeepEqual(svcRo.Status, svc.Status) {
 		toWrite.Status = svc.Status
 	}
